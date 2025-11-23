@@ -10,10 +10,15 @@ const server = http.createServer(app);
 // wss://livebeautyofficial.com http://localhost:4000/
 
 const io = new Server(server, {
-    cors: {
-        origin: "https://livebeautyofficial.com",
-        methods: ["GET", "POST"]
-    },
+   cors: {
+    origin: [
+        "https://livebeautyofficial.com",
+        "https://www.livebeautyofficial.com"
+    ],
+    methods: ["GET", "POST"],
+    credentials: true
+},
+
     path: "/chatbot/socket.io"
 });
 
