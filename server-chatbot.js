@@ -13,8 +13,10 @@ const io = new Server(server, {
     cors: {
         origin: "https://livebeautyofficial.com",
         methods: ["GET", "POST"]
-    }
+    },
+    path: "/socket.io"
 });
+
 
 // STOCKAGE
 let admins = {};          // { socketId: true }
