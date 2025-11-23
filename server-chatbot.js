@@ -14,7 +14,7 @@ const io = new Server(server, {
         origin: "https://livebeautyofficial.com",
         methods: ["GET", "POST"]
     },
-    path: "/socket.io"
+    path: "/chatbot/socket.io"
 });
 
 
