@@ -7,11 +7,11 @@ const app = express();
 app.use(cors());
 
 const server = http.createServer(app);
-// wss://livebeautyofficial.com http://localhost:3000/
+// wss://livebeautyofficial.com http://localhost:4000/
 
 const io = new Server(server, {
     cors: {
-        origin: "https://livebeautyofficial.com",
+        origin: "https://livebeautyofficial.com:4000",
         methods: ["GET", "POST"]
     }
 });
