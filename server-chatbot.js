@@ -11,7 +11,7 @@ const server = http.createServer(app);
 
 const io = new Server(server, {
     cors: {
-        origin: "https://livebeautyofficial.com:4000",
+        origin: "https://livebeautyofficial.com",
         methods: ["GET", "POST"]
     }
 });
