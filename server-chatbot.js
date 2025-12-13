@@ -1,125 +1,267 @@
+// api-chatbot/server-chatbot.js
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
 const cors = require("cors");
+const mysql = require("mysql2/promise");
+const crypto = require("crypto");
 
 const app = express();
 app.use(cors());
+app.use(express.json());
 
 const server = http.createServer(app);
-// wss://livebeautyofficial.com http://localhost:4000/
 
 const io = new Server(server, {
-   cors: {
-    origin: [
-        "https://livebeautyofficial.com",
-        "https://www.livebeautyofficial.com"
-    ],
-    methods: ["GET", "POST"],
-    credentials: true
-},
-
+    cors: {
+        origin: [
+            "https://livebeautyofficial.com",
+            "https://www.livebeautyofficial.com"
+        ],
+        methods: ["GET", "POST"],
+        credentials: true
+    },
     path: "/chatbot/socket.io"
 });
 
+// Configuration MySQL
+const dbConfig = {
+    host: process.env.DB_HOST || 'localhost',
+    user: process.env.DB_USER || 'laraveluser',
+    password: process.env.DB_PASSWORD || 'livebeauty',
+    database: process.env.DB_DATABASE || 'original-studio',
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0
+};
 
-// STOCKAGE
+const pool = mysql.createPool(dbConfig);
+
+// Fonctions de base de données
+async function storeMessage(userId, pseudo, message, sender = 'client', read = false, replied = false) {
+    try {
+        const [result] = await pool.execute(
+            `INSERT INTO chat_messages (user_id, pseudo, message, sender, \`read\`, replied, created_at, updated_at) 
+             VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+            [userId, pseudo, message, sender, read ? 1 : 0, replied ? 1 : 0]
+        );
+        return result.insertId;
+    } catch (error) {
+        console.error("❌ Erreur stockage message:", error);
+        return null;
+    }
+}
+
+async function getUnreadMessagesCount() {
+    try {
+        const [rows] = await pool.execute(
+            `SELECT COUNT(*) as count FROM chat_messages WHERE sender = 'client' AND \`read\` = 0`
+        );
+        return rows[0].count;
+    } catch (error) {
+        console.error("❌ Erreur comptage messages:", error);
+        return 0;
+    }
+}
+
+async function getUnreadMessages() {
+    try {
+        const [rows] = await pool.execute(
+            `SELECT * FROM chat_messages WHERE sender = 'client' AND \`read\` = 0 ORDER BY created_at`
+        );
+        return rows;
+    } catch (error) {
+        console.error("❌ Erreur récupération messages:", error);
+        return [];
+    }
+}
+
+async function markMessagesAsRead(userId) {
+    try {
+        await pool.execute(
+            `UPDATE chat_messages SET \`read\` = 1, read_at = NOW() 
+             WHERE user_id = ? AND sender = 'client' AND \`read\` = 0`,
+            [userId]
+        );
+    } catch (error) {
+        console.error("❌ Erreur marquage comme lu:", error);
+    }
+}
+
+async function getClientHistory(userId) {
+    try {
+        const [rows] = await pool.execute(
+            `SELECT * FROM chat_messages WHERE user_id = ? ORDER BY created_at`,
+            [userId]
+        );
+        return rows;
+    } catch (error) {
+        console.error("❌ Erreur historique:", error);
+        return [];
+    }
+}
+
+// STOCKAGE SOCKET
 let admins = {};          // { socketId: true }
 let clients = {};         // { userId: socketId }
-let conversations = {};   // historique
 
 io.on("connection", (socket) => {
 
     console.log("📌 Nouveau socket connecté :", socket.id);
 
     // IDENTIFICATION
-    socket.on("identify", (data) => {
+    socket.on("identify", async (data) => {
         console.log("🆔 IDENTIFICATION :", data);
 
         // ADMIN
         if (data.type === "admin") {
             admins[socket.id] = true;
             console.log("👑 ADMIN connecté :", socket.id);
+            
+            // Envoyer les messages stockés
+            const unreadMessages = await getUnreadMessages();
+            if (unreadMessages.length > 0) {
+                // Grouper par utilisateur
+                const grouped = {};
+                unreadMessages.forEach(msg => {
+                    if (!grouped[msg.user_id]) {
+                        grouped[msg.user_id] = {
+                            userId: msg.user_id,
+                            pseudo: msg.pseudo,
+                            messages: []
+                        };
+                    }
+                    grouped[msg.user_id].messages.push(msg.message);
+                });
+                
+                // Envoyer chaque groupe
+                Object.values(grouped).forEach(group => {
+                    socket.emit("admin-new-message", {
+                        userId: group.userId,
+                        pseudo: group.pseudo,
+                        message: group.messages[group.messages.length - 1] // Dernier message
+                    });
+                });
+            }
             return;
         }
 
         // CLIENT
         if (data.type === "client") {
-
             const uid = String(data.userId).trim();
             clients[uid] = socket.id;
 
             console.log(`🙋 CLIENT identifié : ${uid} → socket ${socket.id}`);
 
-            if (!conversations[uid])
-                conversations[uid] = { messages: [] };
+            // Envoyer l'historique stocké
+            const history = await getClientHistory(uid);
+            if (history.length > 0) {
+                history.forEach(msg => {
+                    if (msg.sender === 'admin') {
+                        socket.emit("chatbot-reply", {
+                            sender: "Support",
+                            message: msg.message
+                        });
+                    }
+                });
+            }
         }
     });
 
-    // MESSAGE CLIENT → ADMIN
-    socket.on("client-message", (data) => {
-
+    // MESSAGE CLIENT → ADMIN (ou stockage)
+    socket.on("client-message", async (data) => {
         const userId = String(data.userId).trim();
+        const pseudo = data.pseudo;
+        const message = data.message;
 
         console.log("📨 Message CLIENT reçu :", data);
 
-        if (!clients[userId]) {
-            console.log("❌ Client non identifié avant message !");
-            return;
+        // Stocker le message en BDD
+        const messageId = await storeMessage(userId, pseudo, message, 'client', false, false);
+
+        if (messageId) {
+            console.log(`💾 Message stocké en BDD (ID: ${messageId}) pour user ${userId}`);
         }
 
-        // stockage
-        if (!conversations[userId])
-            conversations[userId] = { messages: [] };
-
-        conversations[userId].messages.push({
-            sender: "client",
-            pseudo: data.pseudo,
-            message: data.message,
-            time: Date.now()
-        });
-
-        // envoyer au premier admin connecté
-        const adminSocket = Object.keys(admins)[0];
-        if (adminSocket) {
-            io.to(adminSocket).emit("admin-new-message", {
-                userId,
-                pseudo: data.pseudo,
-                message: data.message
+        // Vérifier si admin connecté
+        const adminSockets = Object.keys(admins);
+        
+        if (adminSockets.length > 0) {
+            // Admin connecté → envoyer en direct
+            adminSockets.forEach(adminSocket => {
+                io.to(adminSocket).emit("admin-new-message", {
+                    userId,
+                    pseudo,
+                    message
+                });
             });
-            return;
+            
+            // Marquer comme lu
+            await markMessagesAsRead(userId);
+        } else {
+            // Admin non connecté → réponse automatique
+            const clientSocket = clients[userId];
+            if (clientSocket) {
+                io.to(clientSocket).emit("bot-reply", {
+                    message: "Nous sommes absents pour le moment 😘. Votre message a été enregistré et nous vous répondrons dès que possible."
+                });
+            }
         }
-
-        // sinon bot auto
-        io.to(clients[userId]).emit("bot-reply", {
-            message: "Nous sommes absents pour le moment 😘"
-        });
     });
 
     // MESSAGE ADMIN → CLIENT
-    socket.on("admin-reply", (data) => {
-
+    socket.on("admin-reply", async (data) => {
         const userId = String(data.userId).trim();
         const msg = data.message;
         const clientSocket = clients[userId];
 
         console.log(`👑 ADMIN → CLIENT ${userId} :`, msg);
 
-        if (!clientSocket) {
-            console.log("⚠ Client introuvable !");
-            return;
+        // Stocker la réponse admin
+        await storeMessage(userId, 'Admin', msg, 'admin', true, true);
+
+        if (clientSocket) {
+            // Client en ligne → envoyer immédiatement
+            io.to(clientSocket).emit("chatbot-reply", {
+                sender: "Support",
+                message: msg
+            });
         }
+        // Si client hors ligne, le message reste stocké et sera envoyé à sa reconnexion
+    });
 
-        conversations[userId].messages.push({
-            sender: "admin",
-            message: msg,
-            time: Date.now()
-        });
+    // CHARGEMENT INITIAL POUR ADMIN
+    socket.on("load-stored-messages", async () => {
+        if (admins[socket.id]) {
+            const unreadCount = await getUnreadMessagesCount();
+            const messages = await getUnreadMessages();
+            
+            socket.emit("stored-messages-count", { count: unreadCount });
+            
+            // Envoyer les messages groupés
+            const grouped = {};
+            messages.forEach(msg => {
+                if (!grouped[msg.user_id]) {
+                    grouped[msg.user_id] = {
+                        userId: msg.user_id,
+                        pseudo: msg.pseudo,
+                        messages: [],
+                        messageIds: []
+                    };
+                }
+                grouped[msg.user_id].messages.push(msg.message);
+                grouped[msg.user_id].messageIds.push(msg.id);
+            });
+            
+            socket.emit("stored-messages", Object.values(grouped));
+        }
+    });
 
-        io.to(clientSocket).emit("chatbot-reply", {
-            sender: "Support",
-            message: msg
-        });
+    // MARQUER COMME LU
+    socket.on("mark-as-read", async (data) => {
+        if (admins[socket.id] && data.userId) {
+            await markMessagesAsRead(data.userId);
+        }
     });
 
     // DECONNEXION
@@ -138,5 +280,5 @@ io.on("connection", (socket) => {
 });
 
 server.listen(4000, () => {
-    console.log("🚀 Serveur opérationnel : http://localhost:4000/");
+    console.log("🚀 Serveur chatbot opérationnel sur le port 4000");
 });
