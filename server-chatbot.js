@@ -110,42 +110,49 @@ io.on("connection", (socket) => {
     console.log("📌 Nouveau socket connecté :", socket.id);
 
     // IDENTIFICATION
-    socket.on("identify", async (data) => {
-        console.log("🆔 IDENTIFICATION :", data);
+   socket.on("identify", async (data) => {
+    console.log("🆔 IDENTIFICATION :", data);
 
-        // ADMIN
-        if (data.type === "admin") {
-            admins[socket.id] = true;
-            console.log("👑 ADMIN connecté :", socket.id);
+    // ADMIN
+    if (data.type === "admin") {
+        admins[socket.id] = true;
+        console.log("👑 ADMIN connecté :", socket.id);
+        
+        // Envoyer TOUS les messages non lus
+        const unreadMessages = await getAllUnreadMessages();
+        console.log(`📦 Messages non lus à envoyer: ${unreadMessages.length}`);
+        
+        if (unreadMessages.length > 0) {
+            // Grouper par utilisateur
+            const grouped = {};
+            unreadMessages.forEach(msg => {
+                if (!grouped[msg.user_id]) {
+                    grouped[msg.user_id] = {
+                        userId: msg.user_id,
+                        pseudo: msg.pseudo,
+                        messages: [],
+                        lastMessage: msg.message,
+                        count: 0
+                    };
+                }
+                grouped[msg.user_id].messages.push(msg.message);
+                grouped[msg.user_id].count++;
+                grouped[msg.user_id].lastMessage = msg.message;
+            });
             
-            // Envoyer les messages stockés
-            const unreadMessages = await getUnreadMessages();
-            if (unreadMessages.length > 0) {
-                // Grouper par utilisateur
-                const grouped = {};
-                unreadMessages.forEach(msg => {
-                    if (!grouped[msg.user_id]) {
-                        grouped[msg.user_id] = {
-                            userId: msg.user_id,
-                            pseudo: msg.pseudo,
-                            messages: []
-                        };
-                    }
-                    grouped[msg.user_id].messages.push(msg.message);
+            // Envoyer chaque groupe
+            Object.values(grouped).forEach(group => {
+                socket.emit("admin-new-message", {
+                    userId: group.userId,
+                    pseudo: group.pseudo,
+                    message: group.lastMessage,
+                    count: group.count
                 });
-                
-                // Envoyer chaque groupe
-                Object.values(grouped).forEach(group => {
-                    socket.emit("admin-new-message", {
-                        userId: group.userId,
-                        pseudo: group.pseudo,
-                        message: group.messages[group.messages.length - 1] // Dernier message
-                    });
-                });
-            }
-            return;
+            });
         }
-
+        return;
+    }
+    
         // CLIENT
         if (data.type === "client") {
             const uid = String(data.userId).trim();
@@ -176,7 +183,7 @@ io.on("connection", (socket) => {
 
         console.log("📨 Message CLIENT reçu :", data);
 
-        // Stocker le message en BDD
+        // Stocker TOUJOURS le message en BDD
         const messageId = await storeMessage(userId, pseudo, message, 'client', false, false);
 
         if (messageId) {
@@ -209,6 +216,23 @@ io.on("connection", (socket) => {
         }
     });
 
+    // Ajoutez cette fonction pour récupérer tous les messages non lus
+    async function getAllUnreadMessages() {
+        try {
+            const [rows] = await pool.execute(
+                `SELECT cm.* 
+                FROM chat_messages cm
+                WHERE cm.sender = 'client' 
+                AND cm.\`read\` = 0
+                ORDER BY cm.created_at`
+            );
+            return rows;
+        } catch (error) {
+            console.error("❌ Erreur récupération messages non lus:", error);
+            return [];
+        }
+    }
+
     // MESSAGE ADMIN → CLIENT
     socket.on("admin-reply", async (data) => {
         const userId = String(data.userId).trim();
@@ -231,31 +255,40 @@ io.on("connection", (socket) => {
     });
 
     // CHARGEMENT INITIAL POUR ADMIN
-    socket.on("load-stored-messages", async () => {
-        if (admins[socket.id]) {
-            const unreadCount = await getUnreadMessagesCount();
-            const messages = await getUnreadMessages();
-            
-            socket.emit("stored-messages-count", { count: unreadCount });
-            
-            // Envoyer les messages groupés
-            const grouped = {};
-            messages.forEach(msg => {
-                if (!grouped[msg.user_id]) {
-                    grouped[msg.user_id] = {
-                        userId: msg.user_id,
-                        pseudo: msg.pseudo,
-                        messages: [],
-                        messageIds: []
-                    };
+        socket.on("load-stored-messages", async () => {
+            if (admins[socket.id]) {
+                const allUnread = await getAllUnreadMessages();
+                const unreadCount = allUnread.length;
+                
+                console.log(`📊 Chargement initial: ${unreadCount} messages stockés`);
+                
+                socket.emit("stored-messages-count", { count: unreadCount });
+                
+                if (unreadCount > 0) {
+                    // Grouper par utilisateur
+                    const grouped = {};
+                    allUnread.forEach(msg => {
+                        if (!grouped[msg.user_id]) {
+                            grouped[msg.user_id] = {
+                                userId: msg.user_id,
+                                pseudo: msg.pseudo,
+                                messages: [],
+                                messageIds: [],
+                                count: 0
+                            };
+                        }
+                        grouped[msg.user_id].messages.push(msg.message);
+                        grouped[msg.user_id].messageIds.push(msg.id);
+                        grouped[msg.user_id].count++;
+                    });
+                    
+                    // Envoyer sous forme de tableau
+                    const groupedArray = Object.values(grouped);
+                    console.log(`📤 Envoi de ${groupedArray.length} conversations stockées`);
+                    socket.emit("stored-messages", groupedArray);
                 }
-                grouped[msg.user_id].messages.push(msg.message);
-                grouped[msg.user_id].messageIds.push(msg.id);
-            });
-            
-            socket.emit("stored-messages", Object.values(grouped));
-        }
-    });
+            }
+        });
 
     // MARQUER COMME LU
     socket.on("mark-as-read", async (data) => {
