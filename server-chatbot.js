@@ -5,6 +5,9 @@ const cors = require("cors");
 const mysql = require("mysql2/promise");
 const axios = require("axios");
 
+// Charger le .env au début du fichier
+require('dotenv').config();
+
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -25,7 +28,7 @@ const io = new Server(server, {
 
 // Configuration MySQL
 const dbConfig = {
-    host: process.env.DB_HOST || '127.0.0.1',
+    host: process.env.DB_HOST || 'localhost',
     port: process.env.DB_PORT || 3306,
     user: process.env.DB_USER || 'laraveluser',
     password: process.env.DB_PASSWORD || 'livebeauty',
@@ -41,6 +44,12 @@ const pool = mysql.createPool(dbConfig);
 // Configuration DeepL
 const DEEPL_API_KEY = process.env.DEEPL_API_KEY;
 const DEEPL_API_URL = process.env.DEEPL_API_URL || 'https://api-free.deepl.com/v2';
+
+console.log("🔧 Configuration DeepL:", {
+    hasKey: !!DEEPL_API_KEY,
+    url: DEEPL_API_URL,
+    keyPreview: DEEPL_API_KEY ? DEEPL_API_KEY.substring(0, 10) + '...' : 'none'
+});
 
 // Fonction de traduction DeepL
 async function translateText(text, targetLang, sourceLang = null) {
@@ -59,16 +68,21 @@ async function translateText(text, targetLang, sourceLang = null) {
             data.source_lang = sourceLang.toUpperCase();
         }
         
+        console.log("📤 Requête DeepL:", { targetLang, sourceLang, textLength: text.length });
+        
         const response = await axios({
             method: 'post',
             url: DEEPL_API_URL + '/translate',
             headers: {
                 'Authorization': `DeepL-Auth-Key ${DEEPL_API_KEY}`,
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'User-Agent': 'Node.js ChatBot/1.0'
             },
             data: data,
             timeout: 10000
         });
+        
+        console.log("✅ Réponse DeepL reçue");
         
         if (response.data && response.data.translations && response.data.translations[0]) {
             return {
@@ -80,26 +94,55 @@ async function translateText(text, targetLang, sourceLang = null) {
         console.error("❌ Erreur traduction DeepL:", error.message);
         if (error.response) {
             console.error("Status:", error.response.status);
-            console.error("Data:", error.response.data);
+            console.error("Data:", JSON.stringify(error.response.data));
         }
         return null;
     }
 }
 
+// Fonction simple de détection de langue (alternative sans DeepL)
+function detectLanguageSimple(text) {
+    const patterns = {
+        'IT': /\b(cio|grazie|per favore|ciao|buongiorno|grazie mille)\b/i,
+        'EN': /\b(hello|hi|thanks|thank you|please|good morning|hey)\b/i,
+        'ES': /\b(hola|gracias|por favor|buenos días|adiós)\b/i,
+        'DE': /\b(hallo|danke|bitte|guten morgen|auf wiedersehen)\b/i,
+        'FR': /\b(bonjour|merci|s'il vous plaît|salut|au revoir)\b/i,
+        'PT': /\b(olá|obrigado|por favor|bom dia|adeus)\b/i,
+        'NL': /\b(hallo|dank je|alsjeblieft|goedemorgen|doei)\b/i
+    };
+    
+    let maxMatches = 0;
+    let detectedLang = 'FR'; // Français par défaut
+    
+    for (const [lang, pattern] of Object.entries(patterns)) {
+        const matches = (text.match(pattern) || []).length;
+        if (matches > maxMatches) {
+            maxMatches = matches;
+            detectedLang = lang;
+        }
+    }
+    
+    return detectedLang;
+}
+
 // Fonction pour détecter la langue
 async function detectLanguage(text) {
+    // Si DeepL n'est pas configuré, utiliser la détection simple
     if (!DEEPL_API_KEY) {
-        console.warn("⚠️ DeepL API key non configurée pour détection");
-        return 'FR'; // Retourner français par défaut
+        console.warn("⚠️ Using simple language detection");
+        return detectLanguageSimple(text);
     }
     
     try {
+        console.log("🔍 Détection langue avec DeepL...");
         const response = await axios({
             method: 'post',
             url: DEEPL_API_URL + '/translate',
             headers: {
                 'Authorization': `DeepL-Auth-Key ${DEEPL_API_KEY}`,
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'User-Agent': 'Node.js ChatBot/1.0'
             },
             data: {
                 text: [text],
@@ -110,11 +153,14 @@ async function detectLanguage(text) {
         
         if (response.data && response.data.translations && response.data.translations[0]) {
             const lang = response.data.translations[0].detected_source_language;
+            console.log(`✅ Langue détectée: ${lang}`);
             return lang ? lang.toUpperCase() : 'FR';
         }
     } catch (error) {
-        console.error("❌ Erreur détection langue:", error.message);
+        console.error("❌ Erreur détection langue DeepL, fallback to simple detection:", error.message);
+        return detectLanguageSimple(text);
     }
+    
     return 'FR'; // Retourner français par défaut
 }
 
@@ -127,9 +173,10 @@ async function storeMessage(userId, pseudo, message, sender = 'client', read = f
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
             [userId, pseudo, message, sender, read ? 1 : 0, replied ? 1 : 0, originalLanguage, translatedMessage, translationTarget]
         );
+        console.log(`💾 Message stocké pour user ${userId}, ID: ${result.insertId}`);
         return result.insertId;
     } catch (error) {
-        console.error("❌ Erreur stockage message:", error);
+        console.error("❌ Erreur stockage message:", error.message);
         return null;
     }
 }
@@ -141,22 +188,12 @@ async function getUserPreferredLanguage(userId) {
             `SELECT preferred_language FROM users WHERE id = ?`,
             [userId]
         );
-        return rows[0]?.preferred_language || 'FR';
+        const lang = rows[0]?.preferred_language || 'FR';
+        console.log(`🌐 Langue préférée pour ${userId}: ${lang}`);
+        return lang;
     } catch (error) {
         console.error("❌ Erreur récupération langue utilisateur:", error.message);
         return 'FR';
-    }
-}
-
-async function getUnreadMessagesCount() {
-    try {
-        const [rows] = await pool.execute(
-            `SELECT COUNT(*) as count FROM chat_messages WHERE sender = 'client' AND \`read\` = 0`
-        );
-        return rows[0].count;
-    } catch (error) {
-        console.error("❌ Erreur comptage messages:", error);
-        return 0;
     }
 }
 
@@ -183,6 +220,7 @@ async function markMessagesAsRead(userId) {
              WHERE user_id = ? AND sender = 'client' AND \`read\` = 0`,
             [userId]
         );
+        console.log(`📝 Messages marqués comme lus pour ${userId}`);
     } catch (error) {
         console.error("❌ Erreur marquage comme lu:", error);
     }
@@ -226,18 +264,19 @@ io.on("connection", (socket) => {
                 // Grouper par utilisateur
                 const grouped = {};
                 unreadMessages.forEach(msg => {
-                    if (!grouped[msg.user_id]) {
-                        grouped[msg.user_id] = {
-                            userId: msg.user_id,
+                    const userId = msg.user_id.toString();
+                    if (!grouped[userId]) {
+                        grouped[userId] = {
+                            userId: userId,
                             pseudo: msg.pseudo,
                             messages: [],
                             lastMessage: msg.message,
                             count: 0
                         };
                     }
-                    grouped[msg.user_id].messages.push(msg.message);
-                    grouped[msg.user_id].count++;
-                    grouped[msg.user_id].lastMessage = msg.message;
+                    grouped[userId].messages.push(msg.message);
+                    grouped[userId].count++;
+                    grouped[userId].lastMessage = msg.message;
                 });
                 
                 // Envoyer chaque groupe
@@ -255,17 +294,17 @@ io.on("connection", (socket) => {
         
         // CLIENT
         if (data.type === "client") {
-            const uid = String(data.userId).trim();
-            clients[uid] = socket.id;
+            const userId = String(data.userId).trim();
+            clients[userId] = socket.id;
 
             // Récupérer et stocker la langue préférée de l'utilisateur
-            const preferredLang = await getUserPreferredLanguage(uid);
-            userLanguages[uid] = preferredLang;
+            const preferredLang = await getUserPreferredLanguage(userId);
+            userLanguages[userId] = preferredLang;
 
-            console.log(`🙋 CLIENT identifié : ${uid} → socket ${socket.id}, langue: ${preferredLang}`);
+            console.log(`🙋 CLIENT identifié : ${userId} → socket ${socket.id}, langue: ${preferredLang}`);
 
             // Envoyer l'historique stocké
-            const history = await getClientHistory(uid);
+            const history = await getClientHistory(userId);
             if (history.length > 0) {
                 history.forEach(msg => {
                     if (msg.sender === 'admin') {
@@ -285,7 +324,7 @@ io.on("connection", (socket) => {
         const pseudo = data.pseudo;
         const message = data.message;
 
-        console.log("📨 Message CLIENT reçu de", pseudo + ":", message);
+        console.log("📨 Message CLIENT reçu de", pseudo + ":", message.substring(0, 50) + "...");
 
         // 1. Détecter la langue du message
         const detectedLang = await detectLanguage(message);
@@ -300,7 +339,9 @@ io.on("connection", (socket) => {
             const translation = await translateText(message, 'FR', detectedLang);
             if (translation) {
                 translatedMessage = translation.translated;
-                console.log(`🌐 Traduction client→admin: ${detectedLang} → FR`);
+                console.log(`🌐 Traduction client→admin: ${detectedLang} → FR réussie`);
+            } else {
+                console.log(`⚠️ Traduction échouée pour ${detectedLang} → FR`);
             }
         } else {
             console.log(`🌐 Message déjà en français (${detectedLang})`);
@@ -312,17 +353,12 @@ io.on("connection", (socket) => {
             detectedLang, translatedMessage, translationTarget
         );
 
-        if (messageId) {
-            console.log(`💾 Message stocké (ID: ${messageId}) pour user ${userId}`);
-        }
-
         // 4. Envoyer à l'admin
         const adminSockets = Object.keys(admins);
         
         if (adminSockets.length > 0) {
             // Préparer le message pour l'admin
             const adminMessage = translatedMessage || message;
-            const languageInfo = detectedLang && detectedLang !== 'FR' ? ` [${detectedLang}→FR]` : '';
             
             // Admin connecté → envoyer en direct
             adminSockets.forEach(adminSocket => {
@@ -333,7 +369,7 @@ io.on("connection", (socket) => {
                     original_message: detectedLang !== 'FR' ? message : null,
                     original_language: detectedLang,
                     translated: !!translatedMessage,
-                    language_info: languageInfo
+                    language_info: detectedLang && detectedLang !== 'FR' ? `[${detectedLang}→FR]` : ''
                 });
             });
             
@@ -351,6 +387,7 @@ io.on("connection", (socket) => {
                     const translation = await translateText(autoReply, userLang, 'FR');
                     if (translation) {
                         autoReply = translation.translated;
+                        console.log(`🌐 Réponse automatique traduite: FR → ${userLang}`);
                     }
                 }
                 
@@ -367,7 +404,7 @@ io.on("connection", (socket) => {
         const msg = data.message;
         const clientSocket = clients[userId];
 
-        console.log(`👑 ADMIN → CLIENT ${userId} :`, msg);
+        console.log(`👑 ADMIN → CLIENT ${userId} :`, msg.substring(0, 50) + "...");
 
         // 1. Obtenir la langue de l'utilisateur
         const userLang = userLanguages[userId] || await getUserPreferredLanguage(userId);
@@ -380,6 +417,8 @@ io.on("connection", (socket) => {
             if (translation) {
                 translatedMessage = translation.translated;
                 console.log(`🌐 Traduction réussie admin→client: FR → ${userLang}`);
+            } else {
+                console.log(`⚠️ Traduction échouée pour admin→client: FR → ${userLang}`);
             }
         }
 
@@ -417,9 +456,10 @@ io.on("connection", (socket) => {
             if (unreadCount > 0) {
                 const grouped = {};
                 allUnread.forEach(msg => {
-                    if (!grouped[msg.user_id]) {
-                        grouped[msg.user_id] = {
-                            userId: msg.user_id,
+                    const userId = msg.user_id.toString();
+                    if (!grouped[userId]) {
+                        grouped[userId] = {
+                            userId: userId,
                             pseudo: msg.pseudo,
                             messages: [],
                             original_messages: [],
@@ -430,10 +470,10 @@ io.on("connection", (socket) => {
                     
                     // Utiliser le message traduit si disponible, sinon l'original
                     const displayMessage = msg.translated_message || msg.message;
-                    grouped[msg.user_id].messages.push(displayMessage);
-                    grouped[msg.user_id].original_messages.push(msg.message);
-                    grouped[msg.user_id].languages.push(msg.original_language);
-                    grouped[msg.user_id].count++;
+                    grouped[userId].messages.push(displayMessage);
+                    grouped[userId].original_messages.push(msg.message);
+                    grouped[userId].languages.push(msg.original_language);
+                    grouped[userId].count++;
                 });
                 
                 const groupedArray = Object.values(grouped);
@@ -460,10 +500,11 @@ io.on("connection", (socket) => {
         }
 
         // Enlever client
-        for (let uid in clients) {
-            if (clients[uid] === socket.id) {
-                delete clients[uid];
-                console.log(`🙋 Client ${uid} déconnecté`);
+        for (let userId in clients) {
+            if (clients[userId] === socket.id) {
+                delete clients[userId];
+                delete userLanguages[userId];
+                console.log(`🙋 Client ${userId} déconnecté`);
                 break;
             }
         }
@@ -490,6 +531,20 @@ server.listen(4000, async () => {
     // Afficher la configuration DeepL
     if (DEEPL_API_KEY) {
         console.log('✅ DeepL API configurée');
+        console.log('📝 URL:', DEEPL_API_URL);
+        
+        // Tester la connexion DeepL
+        try {
+            console.log('🔧 Test connexion DeepL...');
+            const testTranslation = await translateText("Hello", "FR", "EN");
+            if (testTranslation) {
+                console.log('✅ DeepL fonctionne:', testTranslation);
+            } else {
+                console.warn('⚠️ DeepL ne répond pas correctement');
+            }
+        } catch (error) {
+            console.error('❌ Erreur test DeepL:', error.message);
+        }
     } else {
         console.warn('⚠️ DeepL API key non configurée. Mettez-la dans .env');
     }
