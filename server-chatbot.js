@@ -25,13 +25,15 @@ const io = new Server(server, {
 
 // Configuration MySQL
 const dbConfig = {
-    host: process.env.DB_HOST || 'localhost',
+    host: process.env.DB_HOST || '127.0.0.1', // Utiliser 127.0.0.1 au lieu de localhost
+    port: process.env.DB_PORT || 3306, // Ajouter le port explicitement
     user: process.env.DB_USER || 'laraveluser',
     password: process.env.DB_PASSWORD || 'livebeauty',
     database: process.env.DB_DATABASE || 'original-studio',
     waitForConnections: true,
     connectionLimit: 10,
-    queueLimit: 0
+    queueLimit: 0,
+    connectTimeout: 10000 // Timeout de connexion
 };
 
 const pool = mysql.createPool(dbConfig);
