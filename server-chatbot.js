@@ -297,6 +297,8 @@ async function markMessagesAsRead(userId) {
 let admins = {};
 let clients = {};
 let userLanguages = {};
+// Stockage supplémentaire
+let userMessageLanguages = {}; // Stocker la langue du dernier message de chaque user
 
 io.on("connection", (socket) => {
     console.log("📌 Nouveau socket :", socket.id);
@@ -347,18 +349,22 @@ io.on("connection", (socket) => {
 
         // Traduire si nécessaire
         const translation = await translateText(message, 'FR');
+        const detectedLang = translation.detected_lang;
+
+        console.log(`🌐 Langue détectée: ${detectedLang} → FR: ${translation.translated}`);
         
-        console.log(`🌐 ${translation.detected_lang} → FR: ${translation.translated}`);
+        serMessageLanguages[userId] = detectedLang;
+        console.log(`💾 Langue mémorisée pour ${pseudo}: ${detectedLang}`);
 
         // Stocker
-        await storeMessage(
+         await storeMessage(
             userId, pseudo, message, 'client', false, false,
-            translation.detected_lang, 
+            detectedLang, 
             translation.translated !== message ? translation.translated : null,
             'FR'
         );
-
-        // Envoyer aux admins
+        
+ // 4. Envoyer aux admins
         const adminSockets = Object.keys(admins);
         if (adminSockets.length > 0) {
             adminSockets.forEach(adminSocket => {
@@ -366,8 +372,8 @@ io.on("connection", (socket) => {
                     userId,
                     pseudo,
                     message: translation.translated,
-                    original_message: translation.detected_lang !== 'FR' ? message : null,
-                    original_language: translation.detected_lang,
+                    original_message: detectedLang !== 'FR' ? message : null,
+                    original_language: detectedLang,
                     translated: translation.translated !== message
                 });
             });
@@ -376,7 +382,7 @@ io.on("connection", (socket) => {
         } else {
             const clientSocket = clients[userId];
             if (clientSocket) {
-                const userLang = userLanguages[userId] || 'FR';
+                const userLang = userMessageLanguages[userId] || userLanguages[userId] || 'FR';
                 let autoReply = "Nous sommes absents. Votre message a été enregistré.";
                 
                 if (userLang !== 'FR') {
@@ -396,36 +402,61 @@ io.on("connection", (socket) => {
         const msg = data.message;
         const clientSocket = clients[userId];
 
-        console.log(`👑 Admin → ${userId}: ${msg}`);
+        console.log(`👑 Admin → ${userId}: "${msg}"`);
 
-        // Traduire pour le client
-        const userLang = userLanguages[userId] || await getUserPreferredLanguage(userId);
+        // 1. DÉTERMINER LA LANGUE POUR LE CLIENT
+        // Priorité 1: Langue utilisée dans son dernier message
+        // Priorité 2: Langue préférée dans son profil
+        // Priorité 3: Français par défaut
+        
+        const messageLang = userMessageLanguages[userId]; // Langue du dernier message client
+        const preferredLang = userLanguages[userId] || await getUserPreferredLanguage(userId); // Langue profil
+        
+        const targetLang = messageLang || preferredLang || 'FR';
+        
+        console.log(`🌐 Langue cible pour client ${userId}:`);
+        console.log(`   • Langue message client: ${messageLang || 'non définie'}`);
+        console.log(`   • Langue préférée profil: ${preferredLang}`);
+        console.log(`   • Langue cible finale: ${targetLang}`);
+
+        // 2. Traduire si nécessaire
         let finalMessage = msg;
         let isTranslated = false;
 
-        if (userLang !== 'FR') {
-            const translation = await translateText(msg, userLang, 'FR');
-            finalMessage = translation.translated;
-            isTranslated = translation.translated !== msg;
-            console.log(`🌐 FR → ${userLang}: ${finalMessage}`);
+        // Traduire si la langue cible n'est pas le français
+        if (targetLang !== 'FR') {
+            const translation = await translateText(msg, targetLang, 'FR');
+            if (translation && translation.translated !== msg) {
+                finalMessage = translation.translated;
+                isTranslated = true;
+                console.log(`🌐 Traduction: FR → ${targetLang}: "${finalMessage.substring(0, 50)}..."`);
+            } else {
+                console.log(`⚠️ Traduction FR → ${targetLang} échouée, envoi en français`);
+            }
+        } else {
+            console.log(`ℹ️ Client ${userId} parle français, pas de traduction nécessaire`);
         }
 
-        // Stocker
+        // 3. Stocker le message
         await storeMessage(
             userId, 'Admin', msg, 'admin', true, true,
             'FR', 
             isTranslated ? finalMessage : null,
-            userLang
+            targetLang
         );
         
-        // Envoyer au client
+        // 4. Envoyer au client
         if (clientSocket) {
             io.to(clientSocket).emit("chatbot-reply", {
                 sender: "Support",
                 message: finalMessage,
-                translated: isTranslated
+                translated: isTranslated,
+                original_language: isTranslated ? 'FR' : null,
+                target_language: targetLang
             });
-            console.log(`📤 Message envoyé à ${userId}`);
+            console.log(`📤 Message envoyé à ${userId} en ${targetLang}`);
+        } else {
+            console.log(`⚠️ Client ${userId} non connecté, message stocké`);
         }
     });
 
@@ -475,6 +506,7 @@ io.on("connection", (socket) => {
             if (clients[userId] === socket.id) {
                 delete clients[userId];
                 delete userLanguages[userId];
+                delete userMessageLanguages[userId];
                 break;
             }
         }
