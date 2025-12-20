@@ -5,7 +5,8 @@ const cors = require("cors");
 const mysql = require("mysql2/promise");
 const axios = require("axios");
 
-require('dotenv').config();
+// Supprimez cette ligne puisque vous n'utilisez plus .env
+// require('dotenv').config();
 
 const app = express();
 app.use(cors());
@@ -25,13 +26,17 @@ const io = new Server(server, {
     path: "/chatbot/socket.io"
 });
 
-// Configuration MySQL
+// ============================================
+// CONFIGURATION DIRECTE DANS LE CODE
+// ============================================
+
+// Configuration MySQL - DIRECT DANS LE CODE
 const dbConfig = {
-    host: process.env.DB_HOST || '127.0.0.1',
-    port: parseInt(process.env.DB_PORT) || 3306,
-    user: process.env.DB_USER || 'laraveluser',
-    password: process.env.DB_PASSWORD || 'livebeauty',
-    database: process.env.DB_DATABASE || 'original-studio',
+    host: '127.0.0.1',           // ← Votre host MySQL
+    port: 3306,                  // ← Port MySQL
+    user: 'laraveluser',         // ← Votre utilisateur MySQL
+    password: 'livebeauty',      // ← Votre mot de passe MySQL  
+    database: 'original-studio', // ← Votre base de données
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0,
@@ -49,109 +54,95 @@ console.log("🔧 Configuration MySQL:", {
 
 const pool = mysql.createPool(dbConfig);
 
+// Configuration DeepL - DIRECT DANS LE CODE
+const DEEPL_API_KEY = 'e97d1e99-c844-4284-9654-56220dd7b994:fx'; // ← Votre clé DeepL
+const DEEPL_API_URL = 'https://api-free.deepl.com/v2/translate';  // ← URL complète
+
+console.log("🔧 Configuration DeepL:", {
+    hasKey: !!DEEPL_API_KEY,
+    url: DEEPL_API_URL,
+    keyPreview: DEEPL_API_KEY.substring(0, 15) + '...'
+});
+
 // ============================================
-// FONCTIONS DEEPL CORRIGÉES
+// TEST DEEPL SIMPLE
 // ============================================
 
-// Testez d'abord manuellement votre clé avec curl :
-async function testDeepLManually() {
-    const apiKey = process.env.DEEPL_API_KEY;
-    const apiUrl = process.env.DEEPL_API_URL || 'https://api-free.deepl.com/v2/translate';
-    
-    console.log("🔧 Test DeepL manuel...");
-    console.log("🔧 Clé API:", apiKey ? apiKey.substring(0, 15) + '...' : 'non configurée');
-    console.log("🔧 URL:", apiUrl);
+async function testDeepLConnection() {
+    console.log("🧪 Test connexion DeepL...");
     
     try {
-        // Test simple avec curl via Node
-        const { exec } = require('child_process');
-        exec(`curl -X POST "${apiUrl}" \
--H "Authorization: DeepL-Auth-Key ${apiKey}" \
--d '{"text":["Hello"], "target_lang":"FR"}'`, 
-        (error, stdout, stderr) => {
-            if (error) {
-                console.error("❌ Curl error:", error);
-                return;
-            }
-            console.log("✅ Réponse curl:", stdout.substring(0, 200));
+        const response = await axios({
+            method: 'POST',
+            url: DEEPL_API_URL,
+            headers: {
+                'Authorization': `DeepL-Auth-Key ${DEEPL_API_KEY}`,
+                'Content-Type': 'application/json'
+            },
+            data: {
+                text: ['Hello'],
+                target_lang: 'FR'
+            },
+            timeout: 10000
         });
+        
+        if (response.data?.translations?.[0]) {
+            console.log("✅ DeepL fonctionne!");
+            console.log("✅ Test:", "Hello →", response.data.translations[0].text);
+            return true;
+        }
     } catch (error) {
-        console.error("❌ Test manuel échoué:", error.message);
+        console.error("❌ Erreur test DeepL:", error.message);
+        if (error.response) {
+            console.error("Status:", error.response.status);
+            console.error("Data:", error.response.data?.message || error.response.data);
+        }
     }
+    
+    return false;
 }
 
-// Fonction DeepL corrigée selon la documentation officielle
+// ============================================
+// FONCTIONS DE TRADUCTION
+// ============================================
+
 async function translateWithDeepL(text, targetLang, sourceLang = null) {
-    const apiKey = process.env.DEEPL_API_KEY;
-    const apiUrl = process.env.DEEPL_API_URL || 'https://api-free.deepl.com/v2/translate';
-    
-    if (!apiKey) {
-        console.warn("⚠️ DeepL API key non configurée");
-        return null;
-    }
-    
-    console.log(`🔧 DeepL: "${text.substring(0, 50)}..." ${sourceLang ? `(${sourceLang})` : ''} → ${targetLang}`);
+    console.log(`🔧 DeepL: "${text.substring(0, 50)}..." → ${targetLang}`);
     
     try {
-        // Format exact selon documentation DeepL
-        const requestData = {
+        const data = {
             text: [text],
             target_lang: targetLang
         };
         
-        // Ajouter source_lang seulement si spécifié
         if (sourceLang && sourceLang !== 'auto') {
-            requestData.source_lang = sourceLang;
+            data.source_lang = sourceLang;
         }
-        
-        console.log("📤 Requête DeepL:", JSON.stringify(requestData, null, 2));
         
         const response = await axios({
             method: 'POST',
-            url: apiUrl,
+            url: DEEPL_API_URL,
             headers: {
-                'Authorization': `DeepL-Auth-Key ${apiKey}`,
-                'Content-Type': 'application/json',
-                'Accept': 'application/json'
+                'Authorization': `DeepL-Auth-Key ${DEEPL_API_KEY}`,
+                'Content-Type': 'application/json'
             },
-            data: requestData,
-            timeout: 15000
+            data: data,
+            timeout: 10000
         });
         
-        console.log("✅ Réponse DeepL - Status:", response.status);
-        
-        if (response.data && response.data.translations && response.data.translations.length > 0) {
+        if (response.data?.translations?.[0]) {
             const translation = response.data.translations[0];
-            const result = {
+            console.log(`✅ DeepL réussi: "${text.substring(0, 30)}..." → "${translation.text.substring(0, 30)}..."`);
+            return {
                 translated: translation.text,
                 detected_lang: translation.detected_source_language || sourceLang
             };
-            console.log(`✅ DeepL réussi: "${text.substring(0, 50)}..." → "${result.translated.substring(0, 50)}..."`);
-            return result;
         }
         
     } catch (error) {
-        console.error("❌ Erreur DeepL détaillée:");
-        console.error("❌ Message:", error.message);
-        
-        if (error.response) {
-            console.error("❌ Status:", error.response.status);
-            console.error("❌ Headers:", JSON.stringify(error.response.headers, null, 2));
-            console.error("❌ Data:", JSON.stringify(error.response.data, null, 2));
-            
-            if (error.response.status === 403) {
-                console.error("❌ Clé API DeepL invalide!");
-                // Vérifier le format de la clé
-                if (apiKey.includes(':fx')) {
-                    console.error("ℹ️ Votre clé semble être pour DeepL Free (api-free.deepl.com)");
-                } else {
-                    console.error("ℹ️ Votre clé semble être pour DeepL Pro (api.deepl.com)");
-                }
-            }
-        }
-        
-        if (error.request) {
-            console.error("❌ Pas de réponse du serveur DeepL");
+        console.error("❌ Erreur DeepL:", error.message);
+        if (error.response?.status === 403) {
+            console.error("❌ Clé API DeepL invalide ou expirée!");
         }
     }
     
@@ -176,7 +167,7 @@ function detectLanguageSimple(text) {
         }
     }
     
-    return 'EN'; // Anglais par défaut si non détecté
+    return 'EN';
 }
 
 // Fonction principale de traduction avec fallback
@@ -219,7 +210,7 @@ async function translateText(text, targetLang, sourceLang = null) {
 }
 
 // ============================================
-// FONCTIONS MYSQL
+// FONCTIONS MYSQL (inchangées)
 // ============================================
 
 async function storeMessage(userId, pseudo, message, sender = 'client', read = false, replied = false, originalLanguage = null, translatedMessage = null, translationTarget = null) {
@@ -300,7 +291,7 @@ async function markMessagesAsRead(userId) {
 }
 
 // ============================================
-// LOGIQUE SOCKET
+// LOGIQUE SOCKET (inchangée)
 // ============================================
 
 let admins = {};
@@ -492,15 +483,14 @@ io.on("connection", (socket) => {
 
 server.listen(4000, async () => {
     console.log("🚀 Serveur chatbot sur port 4000");
+    console.log("🔧 Configuration en dur activée");
     
     // Tester DeepL
-    console.log("🔧 Test DeepL...");
-    const testResult = await translateWithDeepL("Hello, how are you?", "FR", "EN");
+    const deepLWorking = await testDeepLConnection();
     
-    if (testResult) {
-        console.log("✅ DeepL fonctionne:", testResult.translated);
-    } else {
-        console.warn("⚠️ DeepL échoué - fallback activé");
+    if (!deepLWorking) {
+        console.warn("⚠️ DeepL ne fonctionne pas - traduction basique activée");
+        console.warn("ℹ️ Pour activer DeepL, obtenez une clé valide sur: https://www.deepl.com/pro#developer");
     }
     
     console.log("✅ Serveur prêt!");
