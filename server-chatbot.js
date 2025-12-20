@@ -67,7 +67,6 @@ async function testDeepLManually() {
         const { exec } = require('child_process');
         exec(`curl -X POST "${apiUrl}" \
 -H "Authorization: DeepL-Auth-Key ${apiKey}" \
--H "Content-Type: application/json" \
 -d '{"text":["Hello"], "target_lang":"FR"}'`, 
         (error, stdout, stderr) => {
             if (error) {
