@@ -353,7 +353,7 @@ io.on("connection", (socket) => {
 
         console.log(`🌐 Langue détectée: ${detectedLang} → FR: ${translation.translated}`);
         
-        serMessageLanguages[userId] = detectedLang;
+        userMessageLanguages[userId] = detectedLang;
         console.log(`💾 Langue mémorisée pour ${pseudo}: ${detectedLang}`);
 
         // Stocker
