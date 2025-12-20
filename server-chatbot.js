@@ -28,7 +28,7 @@ const io = new Server(server, {
 
 // Configuration MySQL
 const dbConfig = {
-    host: process.env.DB_HOST || 'localhost',
+    host: process.env.DB_HOST || '127.0.0.1', // Force IPv4
     port: process.env.DB_PORT || 3306,
     user: process.env.DB_USER || 'laraveluser',
     password: process.env.DB_PASSWORD || 'livebeauty',
@@ -36,7 +36,10 @@ const dbConfig = {
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0,
-    connectTimeout: 10000
+    connectTimeout: 10000,
+    socketPath: null, // S'assurer qu'aucun socket Unix n'est utilisé
+    enableKeepAlive: true,
+    keepAliveInitialDelay: 0
 };
 
 const pool = mysql.createPool(dbConfig);
