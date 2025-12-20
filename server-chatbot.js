@@ -223,7 +223,7 @@ async function storeMessage(userId, pseudo, message, sender = 'client', read = f
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
                 [userId, pseudo, message, sender, read ? 1 : 0, replied ? 1 : 0, originalLanguage, translatedMessage, translationTarget]
             );
-            console.log(`💾 Message stocké pour ${pseudo}`);
+            console.log(`💾 Message stocké pour ${pseudo} à ${new Date().toLocaleTimeString()}`);
             return result.insertId;
         } finally {
             connection.release();
@@ -257,7 +257,9 @@ async function getAllUnreadMessages() {
         const connection = await pool.getConnection();
         try {
             const [rows] = await connection.execute(
-                `SELECT cm.* 
+                `SELECT cm.*, 
+                DATE_FORMAT(cm.created_at, '%H:%i') as time_only,
+                DATE_FORMAT(cm.created_at, '%d/%m/%Y %H:%i') as full_datetime
                 FROM chat_messages cm
                 WHERE cm.sender = 'client' 
                 AND cm.\`read\` = 0
@@ -366,19 +368,23 @@ io.on("connection", (socket) => {
         
  // 4. Envoyer aux admins
         const adminSockets = Object.keys(admins);
-        if (adminSockets.length > 0) {
-            adminSockets.forEach(adminSocket => {
-                io.to(adminSocket).emit("admin-new-message", {
-                    userId,
-                    pseudo,
-                    message: translation.translated,
-                    original_message: detectedLang !== 'FR' ? message : null,
-                    original_language: detectedLang,
-                    translated: translation.translated !== message
-                });
+    if (adminSockets.length > 0) {
+        const now = new Date();
+        adminSockets.forEach(adminSocket => {
+            io.to(adminSocket).emit("admin-new-message", {
+                userId,
+                pseudo,
+                message: translation.translated,
+                original_message: detectedLang !== 'FR' ? message : null,
+                original_language: detectedLang,
+                translated: translation.translated !== message,
+                timestamp: now.toISOString(), // ← AJOUTER ICI
+                formattedTime: now.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
+                formattedDate: now.toLocaleDateString('fr-FR')
             });
-            
-            await markMessagesAsRead(userId);
+        });
+        
+        await markMessagesAsRead(userId);
         } else {
             const clientSocket = clients[userId];
             if (clientSocket) {
@@ -439,26 +445,27 @@ io.on("connection", (socket) => {
 
         // 3. Stocker le message
         await storeMessage(
-            userId, 'Admin', msg, 'admin', true, true,
-            'FR', 
-            isTranslated ? finalMessage : null,
-            targetLang
-        );
-        
-        // 4. Envoyer au client
-        if (clientSocket) {
-            io.to(clientSocket).emit("chatbot-reply", {
-                sender: "Support",
-                message: finalMessage,
-                translated: isTranslated,
-                original_language: isTranslated ? 'FR' : null,
-                target_language: targetLang
-            });
-            console.log(`📤 Message envoyé à ${userId} en ${targetLang}`);
-        } else {
-            console.log(`⚠️ Client ${userId} non connecté, message stocké`);
-        }
-    });
+        userId, 'Admin', msg, 'admin', true, true,
+        'FR', 
+        isTranslated ? finalMessage : null,
+        targetLang
+    );
+    
+    // Envoyer au client AVEC timestamp
+    if (clientSocket) {
+        const now = new Date();
+        io.to(clientSocket).emit("chatbot-reply", {
+            sender: "Support",
+            message: finalMessage,
+            translated: isTranslated,
+            original_language: isTranslated ? 'FR' : null,
+            target_language: targetLang,
+            timestamp: now.toISOString(), // ← AJOUTER ICI
+            formattedTime: now.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
+        });
+        console.log(`📤 Message envoyé à ${userId} en ${targetLang} à ${now.toLocaleTimeString()}`);
+    }
+});
 
     socket.on("load-stored-messages", async () => {
         if (admins[socket.id]) {
@@ -469,31 +476,33 @@ io.on("connection", (socket) => {
                 
                 socket.emit("stored-messages-count", { count: unreadCount });
                 
-                if (unreadCount > 0) {
-                    const grouped = {};
-                    allUnread.forEach(msg => {
-                        const userId = msg.user_id;
-                        if (!grouped[userId]) {
-                            grouped[userId] = {
-                                userId: userId,
-                                pseudo: msg.pseudo,
-                                messages: [],
-                                count: 0
-                            };
-                        }
-                        const displayMessage = msg.translated_message || msg.message;
-                        grouped[userId].messages.push(displayMessage);
-                        grouped[userId].count++;
-                    });
-                    
-                    socket.emit("stored-messages", Object.values(grouped));
-                }
-            } catch (error) {
-                console.error("❌ Erreur chargement stocké:", error.message);
-                socket.emit("stored-messages-count", { count: 0 });
+                if (allUnread.length > 0) {
+                const grouped = {};
+                allUnread.forEach(msg => {
+                    const userId = msg.user_id;
+                    if (!grouped[userId]) {
+                        grouped[userId] = {
+                            userId: userId,
+                            pseudo: msg.pseudo,
+                            messages: [],
+                            timestamps: [], // ← AJOUTER POUR LES TIMESTAMPS
+                            count: 0
+                        };
+                    }
+                    const displayMessage = msg.translated_message || msg.message;
+                    grouped[userId].messages.push(displayMessage);
+                    grouped[userId].timestamps.push(msg.created_at); // ← STOCKER LE TIMESTAMP
+                    grouped[userId].count++;
+                });
+                
+                socket.emit("stored-messages", Object.values(grouped));
             }
+        } catch (error) {
+            console.error("❌ Erreur chargement stocké:", error.message);
+            socket.emit("stored-messages-count", { count: 0 });
         }
-    });
+    }
+});
 
     socket.on("disconnect", () => {
         console.log("❌ Déconnexion:", socket.id);
